@@ -1,0 +1,3 @@
+[submodule "exisiting_WSIS/BESTIE"]
+	path = exisiting_WSIS/BESTIE
+	url = https://github.com/SteinVandenbroeke/thesis_BESTIE.git
