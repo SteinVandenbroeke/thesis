@@ -1,12 +1,17 @@
 # Editable
-dataset=voc_val
-result_files=result_voc/CIM-VOC-val.json,result_voc/BESTIE_VOC.json,result_voc/BAS.json
-save_dir=./vis_VOCO12_val_$(date +%Y%m%d_%H%M%S)_${dataset}
+dataset=coco_val
+result_files=result_coco/BAS_WSSS.json,result_coco/BAS_WSIS.json,result_coco/CIM-COCO-val.json #,result_coco/BAS_COCO.json
+#result_files=result_coco/CIM-COCO-val.json #,result_coco/BAS_COCO.json
+#result_files=result_coco/coco_annotations_gpu_0.json
+#result_files=result_coco/BAS_WSIS.json,result_coco/CIM-COCO-val.json
+#result_files=result_coco/BAS_WSIS.json,result_coco/BAS_WSSS.json
+#result_files="result_coco/BESTIE_COCO(4).json"
+save_dir=./vis_val_$(date +%Y%m%d_%H%M%S)_${dataset}
 
 ##############
 # Not editable
 # train CIM
-source .run_venv/bin/activate\
+source .run_venv/bin/activate \
 
 python ./visualize/vis_json_mmcv4.py --dataset ${dataset} \
 --result_files ${result_files} \

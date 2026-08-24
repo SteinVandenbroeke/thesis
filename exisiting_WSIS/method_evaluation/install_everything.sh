@@ -28,7 +28,7 @@ uv pip install --no-cache mmcv==2.1.0 -f https://download.openmmlab.com/mmcv/dis
 python -c "import mmcv; from mmcv.ops import RoIAlign; print('MMCV Extension Loaded Successfully!')"
 
 uv pip install --no-cache chainercv==0.13.1 --no-build-isolation
-uv pip install --no-cache pycocotools scikit-image scipy tqdm
+uv pip install --no-cache pycocotools scikit-image scipy tqdm pandas
 # Resume your project compilation
 
 uv pip install --no-cache "numpy<1.24.0" #4.0.0

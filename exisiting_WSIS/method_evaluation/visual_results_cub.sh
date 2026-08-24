@@ -1,7 +1,7 @@
 # Editable
-dataset=voc_val
-result_files=result/CIM-VOC-val.json,result/BESTIE_VOC.json,result/BAS.json
-save_dir=./vis_VOCO12_val_$(date +%Y%m%d_%H%M%S)
+dataset=cub_val
+result_files=result_cub/BESTIE_CUB.json,result_cub/CIM-CUB.json
+save_dir=./vis_val_$(date +%Y%m%d_%H%M%S)_${dataset}
 
 ##############
 # Not editable

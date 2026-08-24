@@ -5,6 +5,7 @@ from pycocotools.cocoeval import COCOeval
 import json
 from six.moves import cPickle as pickle
 import matplotlib
+import copy
 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -205,14 +206,12 @@ def run_occlusion_analysis_with_classes(p_masks, p_labels, p_scores, gt_masks, g
         filtered_p_scores = []
 
         for p_m, p_l, p_s, gt_m, gt_l, gt_o in zip(p_masks, p_labels, p_scores, gt_masks, gt_labels, occ_scores):
-            # Determine which GT instances fall into the current occlusion bin
             keep_gt_idx = np.where((gt_o > low) & (gt_o <= high))[0]
             ignore_gt_idx = np.where((gt_o <= low) | (gt_o > high))[0]
 
             if len(keep_gt_idx) > 0:
                 filtered_gt_masks.append(gt_m[keep_gt_idx])
                 filtered_gt_labels.append(gt_l[keep_gt_idx])
-                # Track which classes actually have instances in this occlusion bin for this image
                 valid_classes = set(gt_l[keep_gt_idx])
             else:
                 filtered_gt_masks.append(
@@ -231,13 +230,6 @@ def run_occlusion_analysis_with_classes(p_masks, p_labels, p_scores, gt_masks, g
             for pi in range(len(p_m)):
                 pred_mask = p_m[pi]
                 pred_label = p_l[pi]
-
-                # STRICT FILTERING: Only evaluate this prediction if its class has
-                # at least one valid GT instance in the current occlusion bin.
-
-                #TODO 29/06 05:33
-                # if pred_label not in valid_classes:
-                #     continue
 
                 max_iou_ignore = 0.0
                 if len(ignore_gt_idx) > 0:
@@ -286,6 +278,7 @@ def run_occlusion_analysis_with_classes(p_masks, p_labels, p_scores, gt_masks, g
         gc.collect()
 
     return bin_results
+
 
 def get_chainercv_format_v3(coco_api, imgIds, is_gt=True, cat2idx=None, max_dets=100, score_thr=0.01):
     all_masks, all_labels, all_scores = [], [], []
@@ -345,89 +338,10 @@ def get_chainercv_format_v3(coco_api, imgIds, is_gt=True, cat2idx=None, max_dets
     else:
         return all_masks, all_labels, all_scores
 
-def get_chainercv_format(coco_api, imgIds, is_gt=True, cat2idx=None, max_dets=50, score_thr=0.05):
+
+def get_chainercv_format(coco_api, imgIds, is_gt=True, cat2idx=None, max_dets=100, score_thr=0.3):
     return get_chainercv_format_v3(coco_api, imgIds, is_gt, cat2idx, max_dets, score_thr)
-    all_masks, all_labels, all_scores = [], [], []
 
-    if cat2idx is None:
-        catIds = sorted(coco_api.getCatIds())
-        cat2idx = {cat: i for i, cat in enumerate(catIds)}
-
-    # --- THE FIX: Map Continuous IDs (1-80) back to Official COCO IDs ---
-    # cat2idx keys are official IDs, values are 0-79. We reverse it so 1-80 maps to official IDs.
-    continuous_to_coco = {v + 1: k for k, v in cat2idx.items()}
-    # --------------------------------------------------------------------
-
-    for img_id in tqdm(imgIds, desc=f"Converting {'GT' if is_gt else 'Pred'} formats"):
-        ann_ids = coco_api.getAnnIds(imgIds=[img_id])
-        anns = coco_api.loadAnns(ann_ids)
-
-        if not is_gt:
-            anns = sorted(anns, key=lambda x: x.get('score', 0), reverse=True)
-            anns = [ann for ann in anns if ann.get('score', 0) >= score_thr]
-            anns = anns[:max_dets]
-
-        img_info = coco_api.loadImgs(img_id)[0]
-        h, w = img_info['height'], img_info['width']
-
-        masks, labels, scores = [], [], []
-
-        for ann in anns:
-            if is_gt and ann.get('iscrowd', 0) == 1:
-                continue
-
-            # --- THE FIX: Translate the category ID ---
-            raw_cat_id = ann.get('category_id')
-            if not is_gt and raw_cat_id in continuous_to_coco:
-                cat_id = continuous_to_coco[raw_cat_id]
-            else:
-                cat_id = raw_cat_id
-
-            # Safety check: skip if it's somehow still an invalid ID
-            if cat_id not in cat2idx:
-                continue
-            # ------------------------------------------
-
-            # Safety check: skip if there is no segmentation data
-            if 'segmentation' not in ann:
-                continue
-
-            segm = ann['segmentation']
-            if isinstance(segm, list):
-                rle = maskUtils.frPyObjects(segm, h, w)
-                mask = maskUtils.decode(rle)
-                if len(mask.shape) > 2:
-                    mask = np.max(mask, axis=2)
-            elif isinstance(segm, dict) and isinstance(segm.get('counts'), list):
-                rle = maskUtils.frPyObjects([segm], h, w)
-                mask = maskUtils.decode(rle)[:, :, 0]
-            else:
-                rle = [segm]
-                mask = maskUtils.decode(rle)[:, :, 0]
-
-            if not is_gt and mask.sum() < 350:
-                continue
-
-            masks.append(mask.astype(bool))
-            labels.append(cat2idx[cat_id])
-            if not is_gt:
-                scores.append(ann.get('score', 0.0))
-
-        if len(masks) > 0:
-            all_masks.append(np.stack(masks, axis=0))
-            all_labels.append(np.array(labels, dtype=np.int32))
-            if not is_gt:
-                all_scores.append(np.array(scores, dtype=np.float32))
-        else:
-            all_masks.append(np.empty((0, h, w), dtype=bool))
-            all_labels.append(np.empty((0,), dtype=np.int32))
-            if not is_gt:
-                all_scores.append(np.empty((0,), dtype=np.float32))
-
-    if is_gt:
-        return all_masks, all_labels, cat2idx
-    else:
-        return all_masks, all_labels, all_scores
 
 # ==============================================================================
 # EXISTING VISUALIZATION LOGIC
@@ -523,24 +437,17 @@ def gt_dataset_mask(cocoGT, save_dir, root_dir, name_mapping):
 
 def analyze_single_instance_splits(p_masks, p_labels, gt_masks, gt_labels, class_names, model_name, save_dir, cocoGt,
                                    imgIds, root_dir, min_overlap_pixels=5):
-    """
-    Analyzes images with exactly ONE ground truth instance.
-    Plots side-by-side comparisons for images where the model predicts 0 or >1 instances.
-    """
     split_counts_overall = {}
     split_counts_by_class = {}
 
-    # Create the specific folder for the wrong split visualizations
     error_save_dir = os.path.join(save_dir, "wrong single instance")
     os.makedirs(error_save_dir, exist_ok=True)
 
-    # Get colormap for drawing (using the function already in your script)
     color_array = colormap(True)
     w_ratio = .4
     color_array = color_array * (1 - w_ratio) + w_ratio
 
     for i in tqdm(range(len(gt_masks)), desc=f"Analyzing Splits for {model_name}"):
-        # Only look at images with exactly 1 GT instance
         if len(gt_masks[i]) == 1:
             gt_m = gt_masks[i][0].astype(bool)
             gt_l = gt_labels[i][0]
@@ -556,18 +463,15 @@ def analyze_single_instance_splits(p_masks, p_labels, gt_masks, gt_labels, class
 
             if len(preds_m) > 0:
                 for p_idx, (pm, pl) in enumerate(zip(preds_m, preds_l)):
-                    # Check if prediction is the same class and overlaps the GT mask
                     if pl == gt_l:
                         overlap = np.logical_and(pm.astype(bool), gt_m).sum()
                         if overlap >= min_overlap_pixels:
                             splits += 1
                             split_indices.append(p_idx)
 
-            # Tally the counts
             split_counts_overall[splits] = split_counts_overall.get(splits, 0) + 1
             split_counts_by_class[gt_l][splits] = split_counts_by_class[gt_l].get(splits, 0) + 1
 
-            # --- VISUALIZATION FOR ERRORS (Splits != 1) ---
             if splits != 1:
                 img_id = imgIds[i]
                 img_info = cocoGt.loadImgs([img_id])[0]
@@ -577,7 +481,6 @@ def analyze_single_instance_splits(p_masks, p_labels, gt_masks, gt_labels, class
                     with Image.open(os.path.join(root_dir, path)).convert("RGB") as img_pil:
                         img = np.array(img_pil)
 
-                    # 1. Prepare GT Data
                     gt_img_drawn = img.copy()
                     y_indices, x_indices = np.where(gt_m)
 
@@ -595,7 +498,6 @@ def analyze_single_instance_splits(p_masks, p_labels, gt_masks, gt_labels, class
                                                          bbox_color=c_gt, mask_color=255 * c_gt,
                                                          font_size=12, thickness=2, alpha=0.8)
 
-                    # 2. Prepare Pred Data
                     dt_img_drawn = img.copy()
                     if len(split_indices) > 0:
                         dt_polygons, dt_box_list, dt_label_list, dt_color = [], [], [], []
@@ -623,7 +525,6 @@ def analyze_single_instance_splits(p_masks, p_labels, gt_masks, gt_labels, class
                                                              bbox_color=dt_color, mask_color=255 * dt_color,
                                                              font_size=12, thickness=2, alpha=0.8)
 
-                    # 3. Plot Side-by-Side
                     fig, axes = plt.subplots(1, 2, figsize=(24, 12))
                     axes[0].imshow(np.uint8(gt_img_drawn))
                     axes[0].set_title("Ground Truth (1 object)", fontsize=24, fontweight='bold')
@@ -634,7 +535,6 @@ def analyze_single_instance_splits(p_masks, p_labels, gt_masks, gt_labels, class
                     axes[1].axis("off")
 
                     plt.tight_layout()
-                    # Replace slashes to avoid path issues if images are in subfolders
                     safe_path = path.replace('/', '_').replace('\\', '_')
                     save_name = f"{os.path.splitext(safe_path)[0]}_splits_{splits}.png"
                     plt.savefig(os.path.join(error_save_dir, save_name), dpi=150, bbox_inches='tight', pad_inches=0)
@@ -651,7 +551,6 @@ def analyze_single_instance_splits(p_masks, p_labels, gt_masks, gt_labels, class
         print(f"No single-instance images found for {model_name}.")
         return
 
-    # --- Plot 1: Overall Counts ---
     max_splits = max(split_counts_overall.keys())
     x_vals = list(range(max_splits + 1))
     y_overall = [split_counts_overall.get(x, 0) for x in x_vals]
@@ -664,20 +563,27 @@ def analyze_single_instance_splits(p_masks, p_labels, gt_masks, gt_labels, class
     plt.xticks(x_vals)
     plt.grid(axis='y', linestyle='--', alpha=0.6, zorder=0)
     plt.tight_layout()
+
+    pd.DataFrame({
+        "Number of Splits": x_vals,
+        "Number of Images": y_overall
+    }).to_csv(os.path.join(save_dir, f"splits_overall_{model_name}_plot.csv"), index=False)
+
     plt.savefig(os.path.join(save_dir, f"splits_overall_{model_name}.png"), dpi=300)
     plt.close('all')
 
-    # --- Plot 2: Counts by Class (Stacked Bar) ---
     plt.figure(figsize=(14, 8))
     bottom = np.zeros(len(x_vals))
     cmap = plt.get_cmap('tab20')
     colors = cmap(np.linspace(0, 1, len(split_counts_by_class)))
 
+    csv_data = {"Number of Splits": x_vals}
     for idx, (cls_idx, counts) in enumerate(sorted(split_counts_by_class.items())):
         cls_name = class_names[cls_idx] if cls_idx < len(class_names) else f"Class {cls_idx}"
         y_cls = [counts.get(x, 0) for x in x_vals]
         plt.bar(x_vals, y_cls, bottom=bottom, label=cls_name, color=colors[idx], edgecolor='white', zorder=3)
         bottom += np.array(y_cls)
+        csv_data[cls_name] = y_cls
 
     plt.title(f'Single Instance Splitting - By Class ({model_name})', fontsize=16, fontweight='bold')
     plt.xlabel('Number of Predicted Instances (Splits)', fontsize=12)
@@ -687,6 +593,9 @@ def analyze_single_instance_splits(p_masks, p_labels, gt_masks, gt_labels, class
     plt.legend(bbox_to_anchor=(1.02, 1), loc='upper left', ncol=2 if len(split_counts_by_class) > 15 else 1,
                fontsize='small')
     plt.tight_layout()
+
+    pd.DataFrame(csv_data).to_csv(os.path.join(save_dir, f"splits_by_class_{model_name}_plot.csv"), index=False)
+
     plt.savefig(os.path.join(save_dir, f"splits_by_class_{model_name}.png"), dpi=300)
     plt.close('all')
 
@@ -694,13 +603,9 @@ def analyze_single_instance_splits(p_masks, p_labels, gt_masks, gt_labels, class
 
 
 def analyze_gt_splits(cocoGt, cocoDt, imgIds, model_name, save_dir, iou_thresh=0.5):
-    """
-    Analyzes ground truth instances to see how many separate polygons (splits)
-    they are made of, and checks if the model correctly predicted them.
-    """
-    splits_counts = {}  # num_splits -> count of instances
-    correct_counts = {}  # num_splits -> count of correct predictions
-    wrong_counts = {}  # num_splits -> count of wrong (missed) predictions
+    splits_counts = {}
+    correct_counts = {}
+    wrong_counts = {}
 
     for img_id in tqdm(imgIds, desc=f"Analyzing GT splits for {model_name}"):
         gt_ann_ids = cocoGt.getAnnIds(imgIds=[img_id])
@@ -709,13 +614,11 @@ def analyze_gt_splits(cocoGt, cocoDt, imgIds, model_name, save_dir, iou_thresh=0
         dt_ann_ids = cocoDt.getAnnIds(imgIds=[img_id])
         dt_anns = cocoDt.loadAnns(dt_ann_ids)
 
-        # Sort predictions by score so we match the highest confidence ones first
         dt_anns = sorted(dt_anns, key=lambda x: x.get('score', 0), reverse=True)
 
         img_info = cocoGt.loadImgs(img_id)[0]
         h, w = img_info['height'], img_info['width']
 
-        # Decode dt masks
         dt_masks = []
         dt_cats = []
         for d_ann in dt_anns:
@@ -733,18 +636,15 @@ def analyze_gt_splits(cocoGt, cocoDt, imgIds, model_name, save_dir, iou_thresh=0
             dt_masks.append(mask.astype(bool))
             dt_cats.append(d_ann['category_id'])
 
-        # Check each Ground Truth instance
         for g_ann in gt_anns:
             if g_ann.get('iscrowd', 0) == 1:
                 continue
 
-            # 1. Determine number of splits (polygons) in GT
             if type(g_ann['segmentation']) == list:
                 num_splits = len(g_ann['segmentation'])
             else:
-                num_splits = 1  # RLE format is counted as a single block here
+                num_splits = 1
 
-            # Get GT mask
             if type(g_ann['segmentation']) == list:
                 rle = maskUtils.frPyObjects(g_ann['segmentation'], h, w)
                 mask = maskUtils.decode(rle)
@@ -760,55 +660,25 @@ def analyze_gt_splits(cocoGt, cocoDt, imgIds, model_name, save_dir, iou_thresh=0
             g_mask = mask.astype(bool)
             g_cat = g_ann['category_id']
 
-            # 2. Check if the model correctly predicted it (IoU >= threshold)
             matched = False
             for d_mask, d_cat in zip(dt_masks, dt_cats):
                 if d_cat == g_cat:
-                    # # === ADD THIS DEBUG SNIPPET ===
-                    # if g_mask.shape != d_mask.shape:
-                    #     print(f"\n⚠️ Mismatch found! GT: {g_mask.shape}, Pred: {d_mask.shape}")
-                    #     import matplotlib.pyplot as plt
-                    #     import os
-                    #     import sys
-                    #
-                    #     fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-                    #     axes[0].imshow(g_mask, cmap='gray')
-                    #     axes[0].set_title(f"Ground Truth {g_mask.shape}", fontsize=14)
-                    #     axes[0].axis('off')
-                    #
-                    #     axes[1].imshow(d_mask, cmap='gray')
-                    #     axes[1].set_title(f"Prediction {d_mask.shape}", fontsize=14)
-                    #     axes[1].axis('off')
-                    #
-                    #     debug_path = os.path.join(save_dir, f"mismatch_debug_img_{img_id}.png")
-                    #     plt.tight_layout()
-                    #     plt.savefig(debug_path)
-                    #     plt.close('all')
-                    #
-                    #     print(f"📸 Saved debug plot to: {debug_path}")
-                    #     print("Stopping execution so you can inspect the image...")
-                    #     sys.exit(1)  # Halt the script immediately
-                    # # ==============================
+                    if g_mask.shape != d_mask.shape:
+                        d_mask_eval = cv2.resize(
+                            d_mask.astype(np.uint8),
+                            (g_mask.shape[1], g_mask.shape[0]),
+                            interpolation=cv2.INTER_NEAREST
+                        ).astype(bool)
+                    else:
+                        d_mask_eval = d_mask
 
-                    #TODO CIM CHECK
-                    # if g_mask.shape != d_mask.shape:
-                    #     d_mask_eval = cv2.resize(
-                    #         d_mask.astype(np.uint8),
-                    #         (g_mask.shape[1], g_mask.shape[0]),
-                    #         interpolation=cv2.INTER_NEAREST
-                    #     ).astype(bool)
-                    # else:
-                    #     d_mask_eval = d_mask
-
-
-                    inter = np.logical_and(g_mask, d_mask).sum()
-                    union = np.logical_or(g_mask, d_mask).sum()
+                    inter = np.logical_and(g_mask, d_mask_eval).sum()
+                    union = np.logical_or(g_mask, d_mask_eval).sum()
                     iou = inter / (union + 1e-6)
                     if iou >= iou_thresh:
                         matched = True
-                        break  # Found a correct prediction for this GT
+                        break
 
-            # Tally results
             splits_counts[num_splits] = splits_counts.get(num_splits, 0) + 1
             if num_splits not in correct_counts:
                 correct_counts[num_splits] = 0
@@ -823,7 +693,6 @@ def analyze_gt_splits(cocoGt, cocoDt, imgIds, model_name, save_dir, iou_thresh=0
         print(f"No GT annotations found for {model_name}.")
         return
 
-    # --- Plot 1: Splits Distribution ---
     x_vals = sorted(list(splits_counts.keys()))
     y_vals = [splits_counts[x] for x in x_vals]
 
@@ -834,10 +703,15 @@ def analyze_gt_splits(cocoGt, cocoDt, imgIds, model_name, save_dir, iou_thresh=0
     plt.ylabel('Number of Ground Truth Instances', fontsize=12)
     plt.grid(axis='y', linestyle='--', alpha=0.6, zorder=0)
     plt.tight_layout()
+
+    pd.DataFrame({
+        "Number of Splits": x_vals,
+        "Number of Ground Truth Instances": y_vals
+    }).to_csv(os.path.join(save_dir, f"gt_splits_overall_distribution_{model_name}_plot.csv"), index=False)
+
     plt.savefig(os.path.join(save_dir, f"gt_splits_overall_distribution_{model_name}.png"), dpi=300)
     plt.close('all')
 
-    # --- Plot 2: Correct vs Wrong Predictions by Splits ---
     y_correct = [correct_counts[x] for x in x_vals]
     y_wrong = [wrong_counts[x] for x in x_vals]
 
@@ -858,6 +732,13 @@ def analyze_gt_splits(cocoGt, cocoDt, imgIds, model_name, save_dir, iou_thresh=0
     plt.legend(fontsize=12)
     plt.grid(axis='y', linestyle='--', alpha=0.6, zorder=0)
     plt.tight_layout()
+
+    pd.DataFrame({
+        "Number of Splits": x_vals,
+        "Correct Predictions (TP)": y_correct,
+        "Wrong Predictions (FN)": y_wrong
+    }).to_csv(os.path.join(save_dir, f"gt_splits_accuracy_{model_name}_plot.csv"), index=False)
+
     plt.savefig(os.path.join(save_dir, f"gt_splits_accuracy_{model_name}.png"), dpi=300)
     plt.close('all')
 
@@ -1049,7 +930,6 @@ def update_and_generate_latex_table(dataset_arg, model_names, overall_maps, any_
     import pandas as pd
     import numpy as np
 
-    # Map the argparse dataset to the table columns
     dataset_arg_lower = dataset_arg.lower()
     if "cub" in dataset_arg_lower:
         ds_key = "CUB"
@@ -1060,14 +940,12 @@ def update_and_generate_latex_table(dataset_arg, model_names, overall_maps, any_
     else:
         ds_key = "UNKNOWN"
 
-    # Load existing database if it exists to append/update data
     if os.path.exists(db_path):
         with open(db_path, 'r') as f:
             db = json.load(f)
     else:
         db = {}
 
-    # Update database with current run's metrics
     for model in model_names:
         if model not in db:
             db[model] = {}
@@ -1090,11 +968,9 @@ def update_and_generate_latex_table(dataset_arg, model_names, overall_maps, any_
             "75": same_overlap_maps[model].get(0.75, np.nan)
         }
 
-    # Save updated metrics back to JSON
     with open(db_path, 'w') as f:
         json.dump(db, f, indent=4)
 
-    # Build Pandas MultiIndex columns
     columns = pd.MultiIndex.from_tuples([
         ('CUB dataset', 'All samples', 'map@30'),
         ('CUB dataset', 'All samples', 'map@50'),
@@ -1108,18 +984,8 @@ def update_and_generate_latex_table(dataset_arg, model_names, overall_maps, any_
         ('VOC dataset', 'Overlapping same classes', 'map@30'),
         ('VOC dataset', 'Overlapping same classes', 'map@50'),
         ('VOC dataset', 'Overlapping same classes', 'map@75'),
-        # ('COCO dataset', 'All samples', 'map@30'),
-        # ('COCO dataset', 'All samples', 'map@50'),
-        # ('COCO dataset', 'All samples', 'map@75'),
-        # ('COCO dataset', 'Overlapping between classes', 'map@30'),
-        # ('COCO dataset', 'Overlapping between classes', 'map@50'),
-        # ('COCO dataset', 'Overlapping between classes', 'map@75'),
-        # ('COCO dataset', 'Overlapping same classes', 'map@30'),
-        # ('COCO dataset', 'Overlapping same classes', 'map@50'),
-        # ('COCO dataset', 'Overlapping same classes', 'map@75'),
     ], names=['Model', 'Filtertype', 'Score'])
 
-    # Helper function to format 0-1 scale mAP to 0-100 string format
     def fmt(val):
         if pd.isna(val) or val == "" or val is None:
             return ""
@@ -1131,28 +997,19 @@ def update_and_generate_latex_table(dataset_arg, model_names, overall_maps, any_
     for model in models:
         row = []
 
-        # CUB Data
         cub = db[model].get("CUB", {})
         cub_all = cub.get("All", {})
         row.extend([fmt(cub_all.get('30')), fmt(cub_all.get('50')), fmt(cub_all.get('75'))])
 
-        # VOC Data
         voc = db[model].get("VOC", {})
         for section_key in ["All", "Between", "Same"]:
             section = voc.get(section_key, {})
             row.extend([fmt(section.get('30')), fmt(section.get('50')), fmt(section.get('75'))])
 
-        # # COCO Data
-        # coco = db[model].get("COCO", {})
-        # for section_key in ["All", "Between", "Same"]:
-        #     section = coco.get(section_key, {})
-        #     row.extend([fmt(section.get('30')), fmt(section.get('50')), fmt(section.get('75'))])
-
         data.append(row)
 
     df = pd.DataFrame(data, index=models, columns=columns)
 
-    # Generate LaTeX using Pandas
     latex_str = df.to_latex(
         column_format="|l|lll|lllllllll|lllllllll|",
         multicolumn=True,
@@ -1161,9 +1018,44 @@ def update_and_generate_latex_table(dataset_arg, model_names, overall_maps, any_
         na_rep=""
     )
 
-    # Write output to the txt file
     with open(txt_path, 'w') as f:
         f.write(latex_str)
+
+
+keep_itmes = []
+keep_ids = set([int(item) for item in keep_itmes])
+
+
+def filter_coco_items(coco_obj, valid_ids):
+    if valid_ids is None:
+        return coco_obj
+
+    new_coco = copy.deepcopy(coco_obj)
+
+    if 'images' in new_coco.dataset:
+        new_coco.dataset['images'] = [
+            img for img in new_coco.dataset['images'] if img['id'] in valid_ids
+        ]
+
+    if 'annotations' in new_coco.dataset:
+        new_coco.dataset['annotations'] = [
+            ann for ann in new_coco.dataset['annotations'] if ann['image_id'] in valid_ids
+        ]
+
+    new_coco.createIndex()
+
+    return new_coco
+
+
+def force_single_class(coco_obj, target_id=1):
+    coco_obj.dataset['categories'] = [{'id': target_id, 'name': 'object', 'supercategory': 'object'}]
+
+    for ann in coco_obj.dataset.get('annotations', []):
+        ann['category_id'] = target_id
+
+    coco_obj.createIndex()
+
+    return coco_obj
 
 
 if __name__ == '__main__':
@@ -1204,6 +1096,7 @@ if __name__ == '__main__':
         print("Folder created: {}".format(base_save_dir))
         thr = parser.thr
 
+        print(label_file)
         cocoGt = COCO(label_file)
         imgIds = sorted(cocoGt.getImgIds())
 
@@ -1222,7 +1115,6 @@ if __name__ == '__main__':
         iou_thresholds = [0.75, 0.5, 0.3]
         overall_ious = [0.25, 0.30, 0.50, 0.70, 0.75]
 
-        # BINS DEFINITIONS:
         bins_any = [(-0.01, 0.0), (0.0, 0.25), (0.25, 0.50), (0.50, 1.0)]
         bin_labels_any = ["No Overlap", "Low (0-25%)", "Medium (25-50%)", "High (>50%)"]
 
@@ -1281,7 +1173,11 @@ if __name__ == '__main__':
         ax.grid(axis='y', linestyle='--', alpha=0.6)
 
         plt.tight_layout()
+
+        df_counts.to_csv(os.path.join(base_save_dir, "gt_samples_per_occlusion_category_AnyClass_plot.csv"),
+                         index=False)
         dist_plot_path = os.path.join(base_save_dir, "gt_samples_per_occlusion_category_AnyClass.png")
+
         plt.savefig(dist_plot_path)
         plt.close('all')
         print(f"Sample distribution plot saved to {dist_plot_path}\n")
@@ -1321,7 +1217,6 @@ if __name__ == '__main__':
         ax.grid(axis='y', linestyle='--', alpha=0.6)
 
 
-        # Add labels on top of bars
         def autolabel(rects):
             for rect in rects:
                 height = rect.get_height()
@@ -1336,7 +1231,14 @@ if __name__ == '__main__':
         autolabel(rects2)
 
         plt.tight_layout()
+
+        pd.DataFrame({
+            "Occlusion Category": global_bin_labels,
+            "All Classes": [any_counts[l] for l in global_bin_labels],
+            "Same Class": [same_counts[l] for l in global_bin_labels]
+        }).to_csv(os.path.join(base_save_dir, "global_samples_per_occlusion_category_comparison_plot.csv"), index=False)
         global_dist_plot_path = os.path.join(base_save_dir, "global_samples_per_occlusion_category_comparison.png")
+
         plt.savefig(global_dist_plot_path)
         plt.close('all')
         print(f"Global distribution comparison plot saved to {global_dist_plot_path}\n")
@@ -1365,7 +1267,6 @@ if __name__ == '__main__':
 
             cocoDt1 = cocoGt.loadRes(result_file)
 
-            # Raise score threshold to 0.1 and limit to the top 30 detections per image
             p_masks, p_labels, p_scores = get_chainercv_format(cocoDt1, imgIds, is_gt=False, cat2idx=cat2idx)
 
             print(f"\n--- Calculating Overall mAP for {model_name} at IoUs: {overall_ious} ---")
@@ -1386,8 +1287,6 @@ if __name__ == '__main__':
             run_configurations = [
                 ("Any_Class", occ_scores_any, all_models_results_any, bins_any, bin_labels_any),
                 ("Same_Class", occ_scores_same, all_models_results_same, bins_same, bin_labels_same),
-                #("Binary_Overlap", occ_scores_any, all_models_results_binary, bins_binary, bin_labels_binary),
-                #("Binary_Same_Overlap", occ_scores_same, all_models_results_binary_same, bins_binary, bin_labels_binary)
             ]
 
             for occ_type, occ_scores, target_results_dict, specific_bins, specific_labels in run_configurations:
@@ -1396,6 +1295,13 @@ if __name__ == '__main__':
                 for iou in iou_thresholds:
                     results = run_occlusion_analysis_with_classes(p_masks, p_labels, p_scores, gt_masks, gt_labels,
                                                                   occ_scores, iou, specific_bins, specific_labels)
+
+                    results.insert(0, {
+                        "Occlusion_Category": "Overall",
+                        "mAP": model_overall_mAPs.get(iou, 0.0),
+                        "class_aps": np.array([])
+                    })
+
                     df = pd.DataFrame(results)
                     df['IoU_Threshold'] = iou
                     all_dfs.append(df)
@@ -1406,43 +1312,15 @@ if __name__ == '__main__':
                 target_results_dict[model_name] = all_dfs
                 master_df = pd.concat(all_dfs)
 
-                #TODO duurt fucking lang niet nodig voor CUB
-                # print(f"Generating per-class plots in {model_save_dir}/class_plots_{occ_type}...")
-                # class_plots_dir = os.path.join(model_save_dir, f"class_plots_{occ_type}")
-                # os.makedirs(class_plots_dir, exist_ok=True)
-                #
-                # for idx, class_name in enumerate(cls_name_map):
-                #     plt.figure(figsize=(15, 6))
-                #     colors = ['#1f77b4', '#2ca02c', '#d62728', '#ff7f0e'][:len(iou_thresholds)]
-                #     for i, iou in enumerate(iou_thresholds):
-                #         df_iou = master_df[master_df['IoU_Threshold'] == iou]
-                #         class_ap = [res[idx] if idx < len(res) and not np.isnan(res[idx]) else 0.0 for res in
-                #                     df_iou['class_aps']]
-                #         plt.plot(df_iou['Occlusion_Category'], class_ap, label=f'AP @ IoU {iou}', color=colors[i],
-                #                  marker='o', markersize=3)
-                #
-                #     plt.title(f'Performance Analysis: {class_name.upper()} ({model_name} | {occ_type})', fontsize=14)
-                #     plt.xlabel('Occlusion Percentage (%)', fontsize=12)
-                #     plt.ylabel('Average Precision (AP)', fontsize=12)
-                #     plt.ylim(0, 1.1)
-                #     plt.legend()
-                #     plt.grid(True, linestyle='--', alpha=0.5)
-                #     plt.savefig(os.path.join(class_plots_dir, f"{class_name}_occlusion_impact.png"))
-                #     plt.close('all')
-
                 categories = all_dfs[0]['Occlusion_Category'].tolist()
                 x = np.arange(len(categories))
                 width = 0.25
 
                 plt.figure(figsize=(18, 7))
-                if len(categories) == 4:
-                    plt.bar(x - width, all_dfs[0]['mAP'], width, label='mAP @ IoU 0.7', color='b')
-                    plt.bar(x, all_dfs[1]['mAP'], width, label='mAP @ IoU 0.5', color='g')
-                    plt.bar(x + width, all_dfs[2]['mAP'], width, label='mAP @ IoU 0.3', color='r')
-                else:
-                    plt.bar(x - width, all_dfs[0]['mAP'], width, label='mAP @ IoU 0.7', color='b')
-                    plt.bar(x, all_dfs[1]['mAP'], width, label='mAP @ IoU 0.5', color='g')
-                    plt.bar(x + width, all_dfs[2]['mAP'], width, label='mAP @ IoU 0.3', color='r')
+
+                plt.bar(x - width, all_dfs[0]['mAP'], width, label='mAP @ IoU 0.75', color='b')
+                plt.bar(x, all_dfs[1]['mAP'], width, label='mAP @ IoU 0.5', color='g')
+                plt.bar(x + width, all_dfs[2]['mAP'], width, label='mAP @ IoU 0.3', color='r')
 
                 title_str = 'mAP vs. True Mask Occlusion' if occ_type == "Any_Class" else 'mAP vs. Same-Class Mask Occlusion (Overlapping Items Only)'
                 if occ_type == "Binary_Overlap":
@@ -1452,11 +1330,25 @@ if __name__ == '__main__':
                 plt.xlabel('Occlusion Category', fontsize=12)
                 plt.ylabel('mAP', fontsize=12)
                 plt.xticks(x, categories)
+
+                ax = plt.gca()
+                for tick in ax.get_xticklabels():
+                    if tick.get_text() == "Overall":
+                        tick.set_fontweight("bold")
+
                 plt.legend()
                 plt.grid(axis='y', linestyle='--', alpha=0.6)
                 plt.tight_layout()
 
+                pd.DataFrame({
+                    "Occlusion Category": categories,
+                    "mAP @ IoU 0.75": all_dfs[0]['mAP'],
+                    "mAP @ IoU 0.5": all_dfs[1]['mAP'],
+                    "mAP @ IoU 0.3": all_dfs[2]['mAP']
+                }).to_csv(os.path.join(model_save_dir, f"combined_occlusion_impact_bars_{occ_type}_plot.csv"),
+                          index=False)
                 combined_plot_path = os.path.join(model_save_dir, f"combined_occlusion_impact_bars_{occ_type}.png")
+
                 plt.savefig(combined_plot_path)
                 plt.close('all')
 
@@ -1551,11 +1443,11 @@ if __name__ == '__main__':
                 class_names=cls_name_map,
                 model_name=model_name,
                 save_dir=model_save_dir,
-                cocoGt=cocoGt,  # New
-                imgIds=imgIds,  # New
-                root_dir=root  # New
+                cocoGt=cocoGt,
+                imgIds=imgIds,
+                root_dir=root
             )
-            # >>> NEW CODE FOR SINGLE-INSTANCE mAP <<<
+
             print(f"\n--- Calculating mAP for Single-Instance Images ({model_name}) ---")
 
             print(f"\n--- GT split ({model_name}) ---")
@@ -1574,7 +1466,6 @@ if __name__ == '__main__':
             single_p_labels = []
             single_p_scores = []
 
-            # Filter for images that have exactly 1 GT mask
             for i in range(len(gt_masks)):
                 if len(gt_masks[i]) == 1:
                     single_gt_masks.append(gt_masks[i])
@@ -1584,73 +1475,86 @@ if __name__ == '__main__':
                     single_p_scores.append(p_scores[i])
 
             if len(single_gt_masks) > 0:
-                for iou in overall_ious:  # Uses the overall_ious list from your script (e.g., 0.25, 0.5, 0.7, 0.75)
+                for iou in overall_ious:
                     res_single = eval_instance_segmentation_voc(
                         single_p_masks, single_p_labels, single_p_scores,
                         single_gt_masks, single_gt_labels, iou_thresh=iou
                     )
                     single_map = res_single['map'] if res_single['map'] is not None else 0.0
                     print(f"  mAP @ IoU {iou}: {single_map:.4f}")
-
-                # Optional: Save these specific results to a CSV
-                single_map_df = pd.DataFrame({"Class": cls_name_map, "AP_at_IoU_0.5": res_single['ap']})
-                single_map_df.to_csv(os.path.join(model_save_dir, f"single_instance_mAP_{model_name}.csv"), index=False)
             else:
                 print("  No single-instance images found to evaluate.")
-            # >>> END OF NEW CODE <<<
 
             print(f"\n--- Calculating Overall mAP for {model_name} at IoUs: {overall_ious} ---")
 
-        # ======================================================================
-        # GENERATE CROSS-MODEL COMPARISON PLOT
-        # ======================================================================
-        print("\n" + "=" * 50)
-        print("Generating Cross-Model Comparison Bar Plots...")
-        print("=" * 50)
+            # ======================================================================
+            # GENERATE CROSS-MODEL COMPARISON PLOT
+            # ======================================================================
+            print("\n" + "=" * 50)
+            print("Generating Cross-Model Comparison Bar Plots...")
+            print("=" * 50)
 
-        cross_model_configs = [
-            ("Any_Class", all_models_results_any, 'Model Comparison: mAP vs. True Mask Occlusion (Any Class)'),
-            ("Same_Class", all_models_results_same,
-             'Model Comparison: mAP vs. Same-Class Occlusion (Overlapping Items Only)'),
-            #("Binary_Overlap", all_models_results_binary, 'Model Comparison: mAP for No Overlap vs. Overlap')
-        ]
+            cross_model_configs = [
+                ("Any_Class", all_models_results_any, 'Model Comparison: mAP vs. True Mask Occlusion (Any Class)'),
+                ("Same_Class", all_models_results_same,
+                 'Model Comparison: mAP vs. Same-Class Occlusion (Overlapping Items Only)'),
+            ]
 
-        for occ_type, results_dict, title_str in cross_model_configs:
-            if not results_dict: continue
+            for occ_type, results_dict, title_str in cross_model_configs:
+                if not results_dict: continue
 
-            fig, axes = plt.subplots(1, 3, figsize=(20, 6), sharey=True)
-            fig.suptitle(title_str, fontsize=16, fontweight='bold')
+                fig, axes = plt.subplots(1, 3, figsize=(20, 6), sharey=True)
+                fig.suptitle(title_str, fontsize=16, fontweight='bold')
 
-            categories = list(results_dict.values())[0][0]['Occlusion_Category'].tolist()
-            x = np.arange(len(categories))
+                categories = list(results_dict.values())[0][0]['Occlusion_Category'].tolist()
+                plot_categories = categories
+                x = np.arange(len(plot_categories))
 
-            num_models = len(results_dict)
-            total_width = 0.8
-            bar_width = total_width / num_models
+                num_models = len(results_dict)
+                total_width = 0.8
+                bar_width = total_width / num_models
 
-            for i, iou in enumerate(iou_thresholds):
-                ax = axes[i]
-                for j, (model_name, model_dfs) in enumerate(results_dict.items()):
-                    df_iou = model_dfs[i]
-                    offset = x - (total_width / 2) + (j * bar_width) + (bar_width / 2)
-                    ax.bar(offset, df_iou['mAP'], width=bar_width, label=model_name, alpha=0.9)
+                for i, iou in enumerate(iou_thresholds):
+                    ax = axes[i]
+                    for j, (model_name, model_dfs) in enumerate(results_dict.items()):
+                        df_iou = model_dfs[i]
+                        overall_val = overall_mAP_results[model_name].get(iou, 0.0)
+                        y_vals = df_iou['mAP'].tolist()
 
-                ax.set_title(f'mAP @ IoU {iou}', fontsize=14)
-                ax.set_xlabel('Occlusion Category', fontsize=12)
-                ax.set_xticks(x)
-                ax.set_xticklabels(categories)
-                if i == 0:
-                    ax.set_ylabel('mAP', fontsize=12)
+                        offset = x - (total_width / 2) + (j * bar_width) + (bar_width / 2)
+                        ax.bar(offset, y_vals, width=bar_width, label=model_name, alpha=0.9)
 
-                ax.grid(axis='y', linestyle='--', alpha=0.6)
-                if i == 0:
-                    ax.legend(title="Models")
+                    ax.set_title(f'mAP @ IoU {iou}', fontsize=14)
+                    ax.set_xlabel('Occlusion Category', fontsize=12)
+                    ax.set_xticks(x)
+                    ax.set_xticklabels(plot_categories)
 
-            plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-            comparison_plot_path = os.path.join(base_save_dir, f"compare_all_models_occlusion_bars_{occ_type}.png")
-            plt.savefig(comparison_plot_path)
-            plt.close('all')
-            print(f"Cross-model {occ_type} occlusion comparison saved to {comparison_plot_path}")
+                    for tick in ax.get_xticklabels():
+                        if tick.get_text() == "Overall":
+                            tick.set_fontweight("bold")
+
+                    if i == 0:
+                        ax.set_ylabel('mAP', fontsize=12)
+
+                    ax.grid(axis='y', linestyle='--', alpha=0.6)
+                    if i == 0:
+                        ax.legend(title="Models")
+
+                plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+
+                cross_csv = {"Occlusion Category": plot_categories}
+                for i, iou in enumerate(iou_thresholds):
+                    for j, (m_name, model_dfs) in enumerate(results_dict.items()):
+                        df_iou = model_dfs[i]
+                        overall_val = overall_mAP_results[m_name].get(iou, 0.0)
+                        cross_csv[f"{m_name} @ IoU {iou}"] = df_iou['mAP'].tolist()
+                pd.DataFrame(cross_csv).to_csv(
+                    os.path.join(base_save_dir, f"compare_all_models_occlusion_bars_{occ_type}_plot.csv"), index=False)
+                comparison_plot_path = os.path.join(base_save_dir, f"compare_all_models_occlusion_bars_{occ_type}.png")
+
+                plt.savefig(comparison_plot_path)
+                plt.close('all')
+                print(f"Cross-model {occ_type} occlusion comparison saved to {comparison_plot_path}")
 
         # ======================================================================
         # GENERATE OVERALL mAP COMPARISON PLOT
@@ -1676,7 +1580,14 @@ if __name__ == '__main__':
         ax.legend(title="Models")
 
         plt.tight_layout()
+
+        overall_csv = {"Model": list(overall_mAP_results.keys())}
+        for iou in overall_ious:
+            overall_csv[f"IoU {iou}"] = [overall_mAP_results[m].get(iou, 0.0) for m in overall_mAP_results.keys()]
+        pd.DataFrame(overall_csv).to_csv(os.path.join(base_save_dir, "compare_all_models_overall_mAP_bars_plot.csv"),
+                                         index=False)
         overall_mAP_plot_path = os.path.join(base_save_dir, "compare_all_models_overall_mAP_bars.png")
+
         plt.savefig(overall_mAP_plot_path)
         plt.close('all')
         print(f"Overall mAP comparison bar plot successfully saved to {overall_mAP_plot_path}\n")
@@ -1689,7 +1600,7 @@ if __name__ == '__main__':
         print("=" * 50)
 
         confusion_df = pd.DataFrame(overlap_confusion_results).T
-        confusion_csv_path = os.path.join(base_save_dir, "overlap_confusion_matrix.csv")
+        confusion_csv_path = os.path.join(base_save_dir, "compare_all_models_overlap_confusion_plot.csv")
         confusion_df.to_csv(confusion_csv_path, index_label="Model")
         print(f"Overlap confusion matrix CSV saved to {confusion_csv_path}")
 
@@ -1812,7 +1723,6 @@ if __name__ == '__main__':
         same_overlap_maps = {}
 
         for model in all_models_results_binary.keys():
-            # Extract maps for 'Any Overlap' (Overlapping between classes)
             df_any = pd.concat(all_models_results_binary[model])
             any_overlap_maps[model] = {}
             for iou in [0.3, 0.5, 0.75]:
@@ -1820,7 +1730,6 @@ if __name__ == '__main__':
                     'mAP'].values
                 any_overlap_maps[model][iou] = val[0] if len(val) > 0 and not pd.isna(val[0]) else 0.0
 
-            # Extract maps for 'Same Class Overlap'
             df_same = pd.concat(all_models_results_binary_same[model])
             same_overlap_maps[model] = {}
             for iou in [0.3, 0.5, 0.75]:
