@@ -1,3 +1,12 @@
 [submodule "exisiting_WSIS/BESTIE"]
 	path = exisiting_WSIS/BESTIE
 	url = https://github.com/SteinVandenbroeke/thesis_BESTIE.git
+[submodule "exisiting_WSIS/thesis_CIM"]
+	path = exisiting_WSIS/thesis_CIM
+	url = https://github.com/SteinVandenbroeke/thesis_CIM
+[submodule "exisiting_WSIS/thesis_BAS-Extension"]
+	path = exisiting_WSIS/thesis_BAS-Extension
+	url = https://github.com/SteinVandenbroeke/thesis_BAS-Extension
+[submodule "exisiting_WSIS/thesis_BESTIE"]
+	path = exisiting_WSIS/thesis_BESTIE
+	url = https://github.com/SteinVandenbroeke/thesis_BESTIE
