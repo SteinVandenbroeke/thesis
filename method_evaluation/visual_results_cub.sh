@@ -8,7 +8,7 @@ save_dir=./vis_val_$(date +%Y%m%d_%H%M%S)_${dataset}
 # train CIM
 source .run_venv/bin/activate\
 
-python ./visualize/vis_json_mmcv4.py --dataset ${dataset} \
+python ./visualize/WSIS_metric_analyse.py --dataset ${dataset} \
 --result_files ${result_files} \
 --save_dir ${save_dir}
 

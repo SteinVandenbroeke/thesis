@@ -12,7 +12,7 @@ from PIL import Image
 
 
 def get_dataset_paths(dataset):
-    """Matches the dataset paths defined in the original vis_json_mmcv4.py script."""
+    """Matches the dataset paths defined in the original WSIS_metric_analyse.py script."""
     if dataset == "voc_val" or dataset == "voc_val_gt":
         label_file = "./data/VOC2012/annotations/voc_2012_val.json"
         root = './data/VOC2012/JPEGImages'
