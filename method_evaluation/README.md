@@ -1,26 +1,28 @@
-# A Study of Weakly Supervised Instance Segmentation Methods
+# Method Evaluation
 
-This repository contains the code and resources for the master's thesis "A Study of Weakly Supervised Instance Segmentation Methods" by Stein Vandenbroeke. The research investigates the current state of Weakly Supervised Instance Segmentation (WSIS) by comparatively evaluating different methods and introducing a targeted occlusion-based evaluation metric.
+This section contains the evaluation code for the models, as well as the scripts used to generate most of the plots featured in the thesis book.
 
-## Repository Structure
+## Setup and Prerequisites
 
-* **method_evaluation/**: The evaluation code is in the `method_evaluation` folder. This includes the custom scripts used to test model performance based on instance overlap and standard Mean Average Precision (mAP).
-* **exisiting_WSIS/**: The modified method codes can be found in the GitHub repositories linked in `exisiting_WSIS`. Custom dataloaders and code modifications were required for several of these methods to handle updated datasets or resolve deprecated packages.
+Before running the evaluation or visualization scripts, please complete the following setup steps:
 
-## Evaluated Methods
+*   **Create Python Environment:** Run `sh create_env.sh` to set up the necessary Python environment.
+*   **Download Datasets:** Place your downloaded datasets directly into this folder.
+*   **Format Datasets:** All datasets must be converted to the default COCO format. You can do this using the conversion scripts provided in the `dataset_converters` folder within this repository.
+*   **Configure Paths:** Open the provided `.sh` files and update the paths to link to your downloaded datasets.
+*   **Add Result Files:** Download the necessary pre-computed result files from [LINK] and add them to this folder.
 
-This repository evaluates three primary methods:
-* **Background Activation Suppression (BAS)**: Originally created as a Weakly Supervised Object Localisation (WSOL) method, this was extended and adapted to serve as a baseline WSIS method by splitting disconnected class masks.
-* **Beyond Semantic to Instance Segmentation (BESTIE)**: A framework designed for WSIS that relies strictly on image-level labels and uses Semantic Knowledge Transfer and self-supervised refinement to generate instance labels.
-* **Complete Instances Mining (CIM)**: A WSIS framework that utilizes MaskIoU heads and an anti-noise strategy to tackle redundant segmentation problems.
+## Running Evaluations
 
-## Datasets Used
+You can run the model evaluations by executing the following shell scripts:
 
-The methods were trained and evaluated on the following datasets:
-* **Pascal VOC 2012**: A multi-class, multi-instance dataset used to evaluate multi-instance segmentation performance.
-* **MS COCO**: A larger dataset with 91 object categories and a high average instance count per image, providing a significantly more difficult segmentation challenge.
-* **CUB-200-2011**: A single-instance dataset containing 200 bird species. This was used to test the impact of WSIS methods when applied to a straightforward WSOL task.
+*   `sh visual_results_coco.sh`
+*   `sh visual_results_cub.sh`
+*   `sh visual_results_voc.sh`
+*   `sh visual_results_cub_WSOL_metric.sh`
 
-## Documentation
+## Creating Plots
 
-For a comprehensive explanation of the methodologies, architectural modifications, dataset challenges, and detailed experiment results, please refer to the thesis_bundle.pdf document.
+To generate the visualizations and plots used in the thesis, run the following script:
+
+*   `sh visualizations/create_visualisations.sh`
